@@ -4,8 +4,8 @@ A project to create a networked Geiger Counter based on Arduino Nano Pro
 Basically this is a hardware project. The goal is to familiarize myself with Geiger Counters and to learn coding (interrupts etc).
 
 The idea is to have a DIY Geiger differing in following aspects:
-  - Is networked by the Ethernet wire (security through obscurity, I do not like the idea od IoT over WiFi)
-  - syslog, mqtt and http het/put methods can be tested
+  - Is networked by the Ethernet wire (security through obscurity, I do not like the idea about IoT over generic WiFi. IoT belongs to a firewalled segment.)
+  - syslog, mqtt and http get/put methods can be tested
   - the device has an RTC (I plan to use RTC instead of millis().
   
 ![NetworkedGeiger](Pic/20180404_221516-1.jpg?raw=true "DIY mockup of Geiger Counter")
