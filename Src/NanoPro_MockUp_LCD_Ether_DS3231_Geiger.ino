@@ -1,6 +1,6 @@
 
 //! @author  Identity Withheld <metssigadus@xyz.ee> (l)
-//! @date    2018-04-05 1522936740
+//! @date    2018-04-05 1522957014
 //! @brief   Networked Geiger Counter sketch
 //! @note    The tube interfaced. Ether payload dummied for a while.
 
@@ -10,7 +10,7 @@
  
  Geiger signal fed to  Digital pin 2 (INT0 capable)
  
- NB! Programmed to Nano Pro 16MHz 5V; programmer = USB Tiny
+ NB! My device rogrammed to Nano Pro 16MHz 5V; programmer = USB Tiny
  currently ~560 bytes free RAM left thnx to PROGRAM and F() macro */
 
 // ========================== include the libraries:
@@ -20,15 +20,21 @@
 #include <Wire.h>
 #include <RTClib.h>
 
-// ========================== defines
-byte Ethernet::buffer[750]; // RAM is a scare resource on Arduinos!
+#include <Time.h>
+#include <TimeLib.h>
 
-const char website[] PROGMEM = {"xyz.ee"}; //7
-const char url[] = {"pong.htm"}; //9 
+// ========================== defines
+#define DEBUG true
+
+
+//  --------- Network related vars:
 
 // We bother the web site repeatedly
 #define REQUEST_RATE 59999 // milliseconds
-static long timer; //milliseconds
+
+// So far our HTTP target is a static one
+const char website[] PROGMEM = {"xyz.ee"}; //7
+const char url[] = {"pong.htm"}; //9 
 
 // User Agent definition:
 const char headerline[] PROGMEM = {"User-Agent: Arduino/1.0 (Nano Pro Geiger / 0.06)"}; //49
@@ -36,20 +42,24 @@ const char headerline[] PROGMEM = {"User-Agent: Arduino/1.0 (Nano Pro Geiger / 0
 // ethernet interface mac address
 const byte mymac[] = {0x74,0x69,0x69,0x2D,0x30,0x34 };
 
-boolean weHaveNetwork = false;
-// Geiger
+byte Ethernet::buffer[750]; // RAM is a scare resource on Arduinos!
+boolean weHaveTheNetwork = false;
+
+// GMC related
 // Conversion factor - CPM to uSV/h
-#define CONV_FACTOR 0.0057
-
+#define CONV_FACTOR 0.0057 // SBM20
 int geigerPin = 2;
-volatile long clicks = 0;
-long cpm = 0;
-long timePreviousMeasure = 0;
-volatile long totalClicks = 0;
-volatile long totalTime = 0;
-// volatile long average = 0; // not int to avoid conversions
 
+volatile long clicks = 0;
+volatile long clicksPerPeriod = 0;
+volatile long totalClicks = 0;
 float microSieverts = 0.0;
+
+// Measurement variables
+volatile long totalRunTime = 0; // secs
+static long timer; //milliseconds
+long cpm = 0;
+long previousTimestamp = 0;
 
 
 // ========================== initializing the libraries
@@ -71,26 +81,22 @@ void setup() {
   lcd_init();
   ether_init();
   
-  if (weHaveNetwork) {
-     dhcp_init();
-  }
-    if (weHaveNetwork) { // Again!!
-     dns_lookup();
-     }
-     
-  rtc_init();
-  // rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
-  // January 21, 2014 at 3am you would call:
-  // rtc.adjust(DateTime(2018, 3, 25, 16, 35, 0));
-  // Uwaga - no timezone! Do think as of UTC.
+  if (weHaveTheNetwork) { dhcp_init(); }
+  if (weHaveTheNetwork) { dns_lookup(); }
 
-    if (weHaveNetwork) {
+  rtc_init();
+  // NB! - no timezone defined! Do think as of UTC.
+     /* rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+     Syntax:
+     rtc.adjust(DateTime(2018, 3, 25, 16, 35, 0)); */
+
+    if (weHaveTheNetwork) {
   // --------- NTP
   // TBD - https://www.eecis.udel.edu/~mills/y2k.html
   // ToDo - set, correct or use the current time (once)
     }
   
-  gui_trivia();
+  publishInformation();
 
   // --------- Geiger setup
   pinMode(geigerPin, INPUT);
@@ -99,102 +105,109 @@ void setup() {
 
 } // END of SETUP
 
+
 // ========================== main()
 
 void loop() {
+  // DS3231Time + 946684800 = UnixTime
+  // https://github.com/PaulStoffregen/Time
   
-  // do_whatever_but_fast_enough();
-  int average = 0;
+  long clockTack = now();
+  long nudi = (clockTack % 8);
+  Serial.print(clockTack);
+  Serial.print(" -------- ");
+  Serial.println(nudi);
   
-  volatile long timeMarker = millis();
-  totalTime = (timeMarker / 1000);
-  if ((timeMarker - timePreviousMeasure) > 10000) {
-    cpm = 6 * clicks;
-    microSieverts = cpm * CONV_FACTOR;
-    timePreviousMeasure = millis();
-    average = (totalClicks * 60 / totalTime) ; // totalTime
-    Serial.print(totalTime);
-    Serial.print(" secs");
-    Serial.print(" - ");
-    Serial.print("count=");
-    Serial.print(totalClicks);
-    Serial.print(" - ");
-    Serial.print("CPM = "); 
-    Serial.print(cpm,DEC);
-    Serial.print(" -===- ");
-    Serial.print("avg=");
-    Serial.print(average, DEC);
-    Serial.print(" -===- ");
-    Serial.print("uSv/h = ");
-    Serial.println(microSieverts,5);      
-    lcd.clear();    
-    lcd.setCursor(0,0);
-    lcd.print("cpm ");
-    lcd.print(cpm);
-    lcd.setCursor(8,0);
-    lcd.print("avg ");
-    lcd.print(average);
-    lcd.setCursor(2,1);
-    lcd.print(microSieverts,5);
-    lcd.setCursor(8,1);
-    lcd.print(" uSv/h");
-    clicks = 0;
-    } 
+  delay(2000);
+  
+  /* if (clockTack % 10) {
+    Serial.print(clockTack);
+    Serial.println(F(" -- Tick task: measurement"));
+    // measurementTask();
+    
+  }
 
+  
+  if (weHaveTheNetwork) {
+    if (clockTack % 20) {
+       Serial.print(clockTack);
+       Serial.println(F(" -- Tick task:reporting"));
+       // reportingTask();
+    }
+  } */
 
 } // end of MAIN
 
+
+
 // -=============== Functions ==============-
-
-
 
 // ---------- lcd_init()
 static void lcd_init() {
-  // set up the LCD's number of columns and rows: 
+
+if (DEBUG) {
   Serial.println(F("\nInitializing LCD now"));
+  }
+  
+  // set up the LCD's number of columns and rows: 
   lcd.begin(16, 2);
-    // set the cursor to column 0, line 1
-  // (note: line 1 is the second row, since counting begins with 0):
-  lcd.setCursor(0, 1);
-  // Print a message to the LCD.
-  lcd.print(F("LCD is WORKING!!"));
-  Serial.println(F("Do check if the LCD is working!")); // No EZ way to check manually
-  delay(2000);
-  lcd.clear(); 
+  // set the cursor to column 0, line 0
+  lcd.setCursor(0, 0);
+  // Print 1-st msg to the LCD. ToDo: define the atom sign!
+  lcd.print(F("Fukushima greetz"));
+if (DEBUG) {  
+  Serial.println(F("Go and check whether the LCD is working!")); // No EZ way to dor it automagically
+}
+  delay(2400); // time to read the msg
 }
 
-// --------- ether_init() enj
+
+// --------- ether_init() enj28j60
 
 static void ether_init() {
-  Serial.println(F("Requesting IP..."));
+  if (DEBUG) {
+    Serial.println(F("Initializing Ethercard..."));
+  }
   lcd.clear();
+  
   if (ether.begin(sizeof Ethernet::buffer, mymac) == 0) {
-    weHaveNetwork = false;
-    lcd.setCursor(0, 0);
+    // weHaveTheNetwork = false;
+    lcd.setCursor(0, 1);
     lcd.print(F("Ether failure!"));
-    Serial.println(F("Ether init fail!"));
-    fatalerror(); // Bail off!
-  } 
-  else {
-    weHaveNetwork = true;
+    if (DEBUG) {
+    Serial.println(F("Ether init failed miserably! We have no Ethercard present"));
+
+    }
+
+  } else {
+    weHaveTheNetwork = true;
     lcd.setCursor(0, 0);
     lcd.print(F("Ether init OK."));
-    Serial.println(F("Ether init OK."));
-    lcd.setCursor(0, 1);
-    // MAC address need to be printed
+      if (DEBUG) {
+        Serial.println(F("Ether init OK."));
+        Serial.print(F("MAC="));
+      }
+    // MAC address will be printed
     // should we invent a function? ->  char[] beautify(char[],count,separator)
-    Serial.print(F("MAC="));
+    lcd.setCursor(0, 1);
     lcd.print(F("MAC="));
 
     for (byte i = 0; i < 6; ++i) {
-      Serial.print(mymac[i], HEX);
-      lcd.print(mymac[i], HEX);
-      if (i < 5)
+        lcd.print(mymac[i], HEX);
+          if (DEBUG) {  
+             Serial.print(mymac[i], HEX);
+          }
+      if (i < 5) {
+        if (DEBUG) { 
         Serial.print(':');
+        }
+      }
+    } // for byte
+    if (DEBUG) { 
+     Serial.println();
     }
-     Serial.println("");
   }
-  delay(3000);
+  delay(3000); // a timespan enabling staring at the screen
 }
 
 
@@ -204,21 +217,28 @@ static void dhcp_init() {
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print(F("Requesting IP:"));
+  lcd.setCursor(3, 1);
+  lcd.print(F("timeout???"));
+  if (DEBUG) { 
   Serial.println(F("Requesting IP via DHCP..."));
-  
+  }
   if (!ether.dhcpSetup()) {
-    weHaveNetwork = false;
-    lcd.setCursor(0, 0);
-    lcd.print(F("DHCP failed. BRR"));
-    Serial.println(F("\nWe obtained no DHCP address. This is FATAL."));
-    fatalerror(); // Bail off!
+    weHaveTheNetwork = false;
+    lcd.setCursor(0, 1);
+    lcd.print(F("DHCP failed. ERR"));
+    ether.powerDown();
+      if (DEBUG) { 
+        Serial.println(F("\nWe obtained no DHCP address.\nNo network available."));
+      }
   } 
   else {
-    weHaveNetwork = true;
+    weHaveTheNetwork = true;
     lcd.clear();
     lcd.setCursor(0, 0);
     lcd.print(F("DHCP IP OK"));
+       if (DEBUG) { 
     Serial.print(F("\nWe obtained an IP address: "));
+       }
     lcd.setCursor(0, 1);
     lcd.print(F("="));
 
@@ -229,45 +249,49 @@ static void dhcp_init() {
         Serial.print(F("."));
         lcd.print(F("."));
       }
-    }
+    } // for
 
-  }
+  } // else
       delay(3000);
-      lcd.clear();
 }
 
 
 // ------------- DNS Lookup
 
 static void dns_lookup() {
+     if (DEBUG) { 
   Serial.println(F("\nAttempting DNS..."));
+     }
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print(F("Attempting DNS:"));
-  delay(2000);
-  // --------- DNS 
+  delay(500);
+  
   if (!ether.dnsLookup(website)) {
+    weHaveTheNetwork = false; // explicitly; could have had meanwhile
     lcd.setCursor(0, 0);
-    lcd.print(F("DNS failed. BRR"));
-    Serial.println(F("\nDNS request failed. This is FATAL."));
-    fatalerror(); // Bail off!
-    weHaveNetwork = false;
-
-  } 
-  else {
+    lcd.print(F("DNSreq FATAL"));
+    if (DEBUG) { 
+      Serial.println(F("\nDNS request failed. This is FATAL."));
+    }
+  } else {
+    weHaveTheNetwork = true;
     lcd.clear();
     lcd.setCursor(0, 0);
     lcd.print(F("DNS OK"));
-    Serial.print(F("\nDNS lookup OK. Destination WWW server IP is: "));
-    for (byte i = 0; i < 4; ++i) {
-      Serial.print(ether.hisip[i], DEC);
-      if (i < 3)
-        Serial.print('.');
-    }
-    Serial.println();
-    weHaveNetwork = true;
-  }
-  delay(3000);
+         if (DEBUG) { 
+           Serial.print(F("DNS lookup OK. Destination WWW server IP is: "));
+           for (byte i = 0; i < 4; ++i) {
+             Serial.print(ether.hisip[i], DEC);
+             if (i < 3) {
+               Serial.print('.');
+             } else {
+               Serial.println();
+             }
+         } //for
+        } // DEBUG
+   delay(2500);
+   } // else
 }
 
 
@@ -275,58 +299,112 @@ static void dns_lookup() {
 
 static void rtc_init() {
 
+    if (DEBUG) { 
+      Serial.print(F("Attempting to start the runtime clock...  "));
+    }
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  
   if (! rtc.begin()) {
+    if (DEBUG) { 
     Serial.println(F("No DS3231 RTC!"));
-    lcd.setCursor(0, 0);
+    }
+    lcd.setCursor(0, 1);
     lcd.print(F("No DS3231 RTC!"));
-    fatalerror();
-  } 
-  else {
-    Serial.println(F("DS3231 RTC OK!"));
+
+  } else {
     lcd.clear();
     lcd.print(F("DS3231 RTC OK!"));
-    delay (1000);
+    if (DEBUG) { 
+      Serial.println(F("DS3231 RTC OK!"));
+      Serial.print(F("utime: "));
+    }
+    delay(500);
     DateTime now = rtc.now();
-
-    Serial.print(F("utime: "));
-    Serial.println(now.unixtime());
     lcd.setCursor(3, 1);
     lcd.print(now.unixtime());
-    delay(3000);
-    lcd.clear();
-
-  }
-
+    if (DEBUG) { 
+    Serial.println(now.unixtime());
+    }
+  } // else
+    delay(2400);
 }
 
 
 // ----------------- GUI trivia
 
-static void gui_trivia() {
+static void publishInformation() {
+  if (DEBUG) {
+    Serial.println(F("\nStarting a timer driven loop.\n"));
+   // ....Extra Debug
+    Serial.print(F("free RAM left: "));
+    Serial.println(freeRam()); 
+  }
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print(F("SETUP successful"));
-  delay(1000);
+  delay(1500);
+  if (weHaveTheNetwork) {
   lcd.clear();
-  // ....LCD wipe
   lcd.setCursor(0, 1);
   lcd.print(F("loop: HTTP GET"));
+  } else {
+  lcd.setCursor(2, 1);
+  lcd.print(F("No network!!"));
+  
+  }
+  delay(1500);
   lcd.setCursor(0, 0);
-  lcd.print(F("UpSec: "));
-  Serial.println(F("\nStarting a timer driven loop.\n"));  
-
-  lcd.setCursor(9, 0);
-  lcd.print(F("wait!"));
-
-  // ....Extra Debug
-  Serial.print(F("free RAM left: "));
-  Serial.println(freeRam()); 
+  lcd.print(F("UpSec:   wait!"));
 }
 
+// ------------------- measure and show the radiation level
+static void measurementTask() {
+  int average = 0;
+  volatile long timeMarker = millis();
+  
+  totalRunTime = (timeMarker / 1000);
+  if ((timeMarker - previousTimestamp) > 10000) {
+    cpm = 6 * clicks; // measured 10 sec; prognosed for 60 sec
+    microSieverts = cpm * CONV_FACTOR;
+    previousTimestamp = millis();
+    average = (totalClicks * 60 / totalRunTime) ; // totalTime
+    lcd.clear();    
+    lcd.setCursor(0,0);
+    lcd.print("cpm=");
+    lcd.print(cpm);
+    lcd.setCursor(8,0);
+    lcd.print("avg=");
+    lcd.print(average);
+    lcd.setCursor(2,1);
+    lcd.print(microSieverts,5);
+    lcd.setCursor(8,1);
+    lcd.print(" uSv/h");
+    clicks = 0;
+    if (DEBUG) {
+      Serial.print(totalRunTime);
+      Serial.print(" secs");
+      Serial.print(" - ");
+      Serial.print("count=");
+      Serial.print(totalClicks);
+      Serial.print(" - ");
+      Serial.print("CPM = "); 
+      Serial.print(cpm,DEC);
+      Serial.print(" -===- ");
+      Serial.print("avg=");
+      Serial.print(average, DEC);
+      Serial.print(" -===- ");
+      Serial.print("uSv/h = ");
+      Serial.println(microSieverts,5);
+    }    
 
-// --------------- do_whatever_but_fast_enough()
+  } 
+} // end of measurementTask
 
-static void do_whatever_but_fast_enough() {
+
+// --------------- Report the values tio the network
+
+static void reportingTask() {
 /* (https://jeelabs.org/2011/06/19/ethercard-library-api/)
 // likely it means - do those ARP and ICMP thingies each time we call you
 // ... on low level: take received data from the ENC28J60 and put into Arduino memory buffer. */
@@ -357,8 +435,10 @@ static void do_whatever_but_fast_enough() {
 
 // -------------------irqservice()
 void irqService(){
+  // safeguards: detaching the interrupt for a while and using volatile variables
   detachInterrupt(0);
   clicks++;
+  clicksPerPeriod++;
   totalClicks++;
   while(digitalRead(2)==0){
   }
@@ -366,25 +446,18 @@ void irqService(){
 }
 
 
-// --------------- loopforever() -> a substitution for  break() not available for Arduino
-static void fatalerror()
-{
-  lcd.setCursor(0, 1);
-  lcd.print(F(" ERR!!!"));
-  // while (1); // Do nothing forever
-}
-
-
-// =============== Foreign functions (copied from elsewhere and modded) ================
+// =============== Foreign functions (copied from elsewhere and possibly modded) ================
 
 // --------- raw_http_reply() - returns what the server answered and how fast
 static void raw_http_reply (byte status, word off, word len) {
+  if (DEBUG) {
   Serial.print(F("<<< reply "));
   Serial.print(millis() - timer);
   Serial.println(F(" ms"));
   Serial.println(F("-----------------"));
   Serial.println((const char*) Ethernet::buffer + off);
   Serial.println(F("-----------------"));
+  }
 }
 
 
