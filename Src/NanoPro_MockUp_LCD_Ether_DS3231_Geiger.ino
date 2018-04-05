@@ -1,14 +1,15 @@
+
 //! @author  Identity Withheld <metssigadus@xyz.ee> (l)
-//! @date    2018-03-30 1522405388
+//! @date    2018-04-05 1522936740
 //! @brief   Networked Geiger Counter sketch
 //! @note    The tube interfaced. Ether payload dummied for a while.
 
-/*
+/* 
  DIY Geiger counter
  with an Hitachi HD44780 LCD driver and network capability
-
+ 
  Geiger signal fed to  Digital pin 2 (INT0 capable)
-
+ 
  NB! Programmed to Nano Pro 16MHz 5V; programmer = USB Tiny
  currently ~560 bytes free RAM left thnx to PROGRAM and F() macro */
 
@@ -23,7 +24,7 @@
 byte Ethernet::buffer[750]; // RAM is a scare resource on Arduinos!
 
 const char website[] PROGMEM = {"xyz.ee"}; //7
-const char url[] = {"pong.htm"}; //9
+const char url[] = {"pong.htm"}; //9 
 
 // We bother the web site repeatedly
 #define REQUEST_RATE 59999 // milliseconds
@@ -35,6 +36,7 @@ const char headerline[] PROGMEM = {"User-Agent: Arduino/1.0 (Nano Pro Geiger / 0
 // ethernet interface mac address
 const byte mymac[] = {0x74,0x69,0x69,0x2D,0x30,0x34 };
 
+boolean weHaveNetwork = false;
 // Geiger
 // Conversion factor - CPM to uSV/h
 #define CONV_FACTOR 0.0057
@@ -49,11 +51,12 @@ volatile long totalTime = 0;
 
 float microSieverts = 0.0;
 
+
 // ========================== initializing the libraries
 
 /* initialize the library in 4-bit mode according to HW pins:
    RS, Enable, DB4 , DB5, DB6, DB7 */
-LiquidCrystal lcd(9, 8, 7, 6, 5, 4);
+LiquidCrystal lcd(9, 8, 7, 6, 5, 4); 
 
 // RTC
 RTC_DS3231 rtc;
@@ -66,22 +69,27 @@ void setup() {
   Serial.println(F("Starting..."));
 
   lcd_init();
+  ether_init();
+  
+  if (weHaveNetwork) {
+     dhcp_init();
+  }
+    if (weHaveNetwork) { // Again!!
+     dns_lookup();
+     }
+     
   rtc_init();
   // rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
   // January 21, 2014 at 3am you would call:
   // rtc.adjust(DateTime(2018, 3, 25, 16, 35, 0));
   // Uwaga - no timezone! Do think as of UTC.
-  ether_init();
-  dhcp_init();
-  dns_lookup();
 
+    if (weHaveNetwork) {
   // --------- NTP
   // TBD - https://www.eecis.udel.edu/~mills/y2k.html
   // ToDo - set, correct or use the current time (once)
-
-
-
-
+    }
+  
   gui_trivia();
 
   // --------- Geiger setup
@@ -94,10 +102,10 @@ void setup() {
 // ========================== main()
 
 void loop() {
-
+  
   // do_whatever_but_fast_enough();
   int average = 0;
-
+  
   volatile long timeMarker = millis();
   totalTime = (timeMarker / 1000);
   if ((timeMarker - timePreviousMeasure) > 10000) {
@@ -111,15 +119,15 @@ void loop() {
     Serial.print("count=");
     Serial.print(totalClicks);
     Serial.print(" - ");
-    Serial.print("CPM = ");
+    Serial.print("CPM = "); 
     Serial.print(cpm,DEC);
     Serial.print(" -===- ");
     Serial.print("avg=");
     Serial.print(average, DEC);
     Serial.print(" -===- ");
     Serial.print("uSv/h = ");
-    Serial.println(microSieverts,5);
-    lcd.clear();
+    Serial.println(microSieverts,5);      
+    lcd.clear();    
     lcd.setCursor(0,0);
     lcd.print("cpm ");
     lcd.print(cpm);
@@ -131,7 +139,9 @@ void loop() {
     lcd.setCursor(8,1);
     lcd.print(" uSv/h");
     clicks = 0;
-    }
+    } 
+
+
 } // end of MAIN
 
 // -=============== Functions ==============-
@@ -140,7 +150,7 @@ void loop() {
 
 // ---------- lcd_init()
 static void lcd_init() {
-  // set up the LCD's number of columns and rows:
+  // set up the LCD's number of columns and rows: 
   Serial.println(F("\nInitializing LCD now"));
   lcd.begin(16, 2);
     // set the cursor to column 0, line 1
@@ -150,44 +160,23 @@ static void lcd_init() {
   lcd.print(F("LCD is WORKING!!"));
   Serial.println(F("Do check if the LCD is working!")); // No EZ way to check manually
   delay(2000);
-  lcd.clear();
-}
-
-// --------- rtc_init()  -------- I2C clock
-
-static void rtc_init() {
-
-  if (! rtc.begin()) {
-    Serial.println(F("No DS3231 RTC!"));
-    lcd.setCursor(0, 0);
-    lcd.print(F("No DS3231 RTC!"));
-    loopforever();
-  }
-  else {
-    Serial.println(F("DS3231 RTC OK!"));
-    lcd.print(F("DS3231 RTC OK!"));
-    delay (3000);
-    DateTime now = rtc.now();
-
-    Serial.print(F("utime: "));
-    Serial.println(now.unixtime());
-    lcd.setCursor(03, 1);
-    lcd.print(now.unixtime());
-    delay(3000);
-
-  }
-
+  lcd.clear(); 
 }
 
 // --------- ether_init() enj
+
 static void ether_init() {
+  Serial.println(F("Requesting IP..."));
+  lcd.clear();
   if (ether.begin(sizeof Ethernet::buffer, mymac) == 0) {
+    weHaveNetwork = false;
     lcd.setCursor(0, 0);
-    lcd.print(F("Ether init fail!"));
+    lcd.print(F("Ether failure!"));
     Serial.println(F("Ether init fail!"));
-    loopforever(); // Bail off!
-  }
+    fatalerror(); // Bail off!
+  } 
   else {
+    weHaveNetwork = true;
     lcd.setCursor(0, 0);
     lcd.print(F("Ether init OK."));
     Serial.println(F("Ether init OK."));
@@ -203,26 +192,31 @@ static void ether_init() {
       if (i < 5)
         Serial.print(':');
     }
-    delay(3000);
+     Serial.println("");
   }
+  delay(3000);
 }
 
 
 // ------------- DHCP init
 
 static void dhcp_init() {
+  lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print(F("Requesting IP:"));
+  Serial.println(F("Requesting IP via DHCP..."));
+  
   if (!ether.dhcpSetup()) {
-    lcd.setCursor(0, 1);
-    lcd.clear();
+    weHaveNetwork = false;
+    lcd.setCursor(0, 0);
     lcd.print(F("DHCP failed. BRR"));
     Serial.println(F("\nWe obtained no DHCP address. This is FATAL."));
-    loopforever(); // Bail off!
-  }
+    fatalerror(); // Bail off!
+  } 
   else {
-    lcd.setCursor(0, 0);
+    weHaveNetwork = true;
     lcd.clear();
+    lcd.setCursor(0, 0);
     lcd.print(F("DHCP IP OK"));
     Serial.print(F("\nWe obtained an IP address: "));
     lcd.setCursor(0, 1);
@@ -237,24 +231,31 @@ static void dhcp_init() {
       }
     }
 
-    delay(3000);
-    lcd.clear();
   }
+      delay(3000);
+      lcd.clear();
 }
 
 
 // ------------- DNS Lookup
 
 static void dns_lookup() {
-  // --------- DNS
+  Serial.println(F("\nAttempting DNS..."));
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print(F("Attempting DNS:"));
+  delay(2000);
+  // --------- DNS 
   if (!ether.dnsLookup(website)) {
     lcd.setCursor(0, 0);
     lcd.print(F("DNS failed. BRR"));
     Serial.println(F("\nDNS request failed. This is FATAL."));
-    loopforever(); // Bail off!
+    fatalerror(); // Bail off!
+    weHaveNetwork = false;
 
-  }
+  } 
   else {
+    lcd.clear();
     lcd.setCursor(0, 0);
     lcd.print(F("DNS OK"));
     Serial.print(F("\nDNS lookup OK. Destination WWW server IP is: "));
@@ -264,8 +265,40 @@ static void dns_lookup() {
         Serial.print('.');
     }
     Serial.println();
+    weHaveNetwork = true;
   }
+  delay(3000);
 }
+
+
+// --------- rtc_init()  -------- I2C clock
+
+static void rtc_init() {
+
+  if (! rtc.begin()) {
+    Serial.println(F("No DS3231 RTC!"));
+    lcd.setCursor(0, 0);
+    lcd.print(F("No DS3231 RTC!"));
+    fatalerror();
+  } 
+  else {
+    Serial.println(F("DS3231 RTC OK!"));
+    lcd.clear();
+    lcd.print(F("DS3231 RTC OK!"));
+    delay (1000);
+    DateTime now = rtc.now();
+
+    Serial.print(F("utime: "));
+    Serial.println(now.unixtime());
+    lcd.setCursor(3, 1);
+    lcd.print(now.unixtime());
+    delay(3000);
+    lcd.clear();
+
+  }
+
+}
+
 
 // ----------------- GUI trivia
 
@@ -280,14 +313,14 @@ static void gui_trivia() {
   lcd.print(F("loop: HTTP GET"));
   lcd.setCursor(0, 0);
   lcd.print(F("UpSec: "));
-  Serial.println(F("\nStarting a timer driven HTTP GET loop.\n"));
+  Serial.println(F("\nStarting a timer driven loop.\n"));  
 
   lcd.setCursor(9, 0);
   lcd.print(F("wait!"));
 
   // ....Extra Debug
   Serial.print(F("free RAM left: "));
-  Serial.println(freeRam());
+  Serial.println(freeRam()); 
 }
 
 
@@ -298,15 +331,15 @@ static void do_whatever_but_fast_enough() {
 // likely it means - do those ARP and ICMP thingies each time we call you
 // ... on low level: take received data from the ENC28J60 and put into Arduino memory buffer. */
   ether.packetLoop(ether.packetReceive());
-
+  
   if (millis() > timer + REQUEST_RATE) {
     timer = millis();
-
+    
     // a real hack to cover the word "wait"
     // b/c right justify with a buffer is too expensive
     lcd.setCursor(7, 0);
     lcd.print("         ");
-
+    
     lcd.setCursor(7, 0);
     lcd.print(timer/1000); // Seconds ( *1000) passed from the inizialization
 
@@ -317,10 +350,11 @@ static void do_whatever_but_fast_enough() {
   // http://www.rogerclark.net/aurduino-ethercard-multiple-browser-request-example/
     // A very picky method - website&headerline must be PROGMEM and url must be not, OR face problems!
     ether.browseUrl(PSTR("/"), url, website, headerline, raw_http_reply); // magic, eh?
-    delay (20); // probably a safeguard timer
+    delay (20); // probably a safeguard timer 
   }
-
+  
 }
+
 // -------------------irqservice()
 void irqService(){
   detachInterrupt(0);
@@ -333,11 +367,11 @@ void irqService(){
 
 
 // --------------- loopforever() -> a substitution for  break() not available for Arduino
-static void loopforever()
+static void fatalerror()
 {
   lcd.setCursor(0, 1);
-  lcd.print(F("FATAL ERR!!!"));
-  while (1); // Do nothing forever
+  lcd.print(F(" ERR!!!"));
+  // while (1); // Do nothing forever
 }
 
 
@@ -366,5 +400,6 @@ int freeRam ()
   int v;
   return (int) &v - (__brkval == 0 ? (int) &__heap_start : (int) __brkval);
 }
+
 
 
