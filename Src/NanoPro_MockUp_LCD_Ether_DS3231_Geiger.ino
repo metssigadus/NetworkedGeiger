@@ -1,6 +1,6 @@
 
 //! @author  Identity Withheld <metssigadus@xyz.ee> (l)
-//! @date    2018-04-05 1522957014
+//! @date    2018-04-05 1522964036
 //! @brief   Networked Geiger Counter sketch
 //! @note    The tube interfaced. Ether payload dummied for a while.
 
@@ -20,6 +20,7 @@
 #include <Wire.h>
 #include <RTClib.h>
 
+// Using this library: https://github.com/PaulStoffregen/Time
 #include <Time.h>
 #include <TimeLib.h>
 
@@ -112,30 +113,22 @@ void loop() {
   // DS3231Time + 946684800 = UnixTime
   // https://github.com/PaulStoffregen/Time
   
+  // TaskLastTimeDone - check if not the same!!!
+  
   long clockTack = now();
-  long nudi = (clockTack % 8);
-  Serial.print(clockTack);
-  Serial.print(" -------- ");
-  Serial.println(nudi);
   
-  delay(2000);
-  
-  /* if (clockTack % 10) {
-    Serial.print(clockTack);
-    Serial.println(F(" -- Tick task: measurement"));
-    // measurementTask();
-    
+  if ((clockTack % 10) == 0) {
+     Serial.print(clockTack);
+     Serial.println(" -------- measurementTask");
+     // measurementTask();
   }
 
-  
-  if (weHaveTheNetwork) {
-    if (clockTack % 20) {
-       Serial.print(clockTack);
-       Serial.println(F(" -- Tick task:reporting"));
-       // reportingTask();
-    }
-  } */
-
+  if ((clockTack % 600) == 0) {
+     Serial.print(clockTack);
+     Serial.println(" -------- !!!!! reportingTask");
+     // reportingTask();
+  }
+delay(920); //ms
 } // end of MAIN
 
 
