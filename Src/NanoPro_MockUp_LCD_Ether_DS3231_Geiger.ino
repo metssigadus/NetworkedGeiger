@@ -1,6 +1,6 @@
 
 //! @author  Identity Withheld <metssigadus@xyz.ee> (l)
-//! @date    2018-04-05 1522964036
+//! @date    2018-04-06 1523048882
 //! @brief   Networked Geiger Counter sketch
 //! @note    The tube interfaced. Ether payload dummied for a while.
 
@@ -33,6 +33,10 @@
 // We bother the web site repeatedly
 #define REQUEST_RATE 59999 // milliseconds
 
+const char timeServer[] PROGMEM = "pool.ntp.org";
+const int utcOffset = 0; // Because we like so
+const unsigned int remoteNtpPort = 123;
+
 // So far our HTTP target is a static one
 const char website[] PROGMEM = {"xyz.ee"}; //7
 const char url[] = {"pong.htm"}; //9 
@@ -44,7 +48,11 @@ const char headerline[] PROGMEM = {"User-Agent: Arduino/1.0 (Nano Pro Geiger / 0
 const byte mymac[] = {0x74,0x69,0x69,0x2D,0x30,0x34 };
 
 byte Ethernet::buffer[750]; // RAM is a scare resource on Arduinos!
+
+boolean weHaveTheEther = false;
 boolean weHaveTheNetwork = false;
+int secsWithoutTheNetwork = 0;
+
 
 // GMC related
 // Conversion factor - CPM to uSV/h
@@ -52,15 +60,28 @@ boolean weHaveTheNetwork = false;
 int geigerPin = 2;
 
 volatile long clicks = 0;
-volatile long clicksPerPeriod = 0;
+volatile long clicksPerPeriodOne = 0;
+volatile long clicksPerPeriodTwo = 0;
 volatile long totalClicks = 0;
+volatile int averageCpmForTask1 = 0;
+volatile int averageCpmForTask2 = 0;
+
+
 float microSieverts = 0.0;
 
 // Measurement variables
+const int taskOneInterval = 10; // LCD information every 10 sec
+const int taskTwoInterval = 60; // Server contacted each minute or 10
+const int taskThreeInterval = 50; // trying to repair the network
+const int taskFourInterval = 7200; // NTP time update
+volatile int taskOneTimes = 0;
+volatile int taskOneCycles = 6; // MUST BE DIVISIBLE
+volatile int taskTwoTimes = 0;
+
 volatile long totalRunTime = 0; // secs
 static long timer; //milliseconds
 long cpm = 0;
-long previousTimestamp = 0;
+long timeOfLastAction = 0;
 
 
 // ========================== initializing the libraries
@@ -80,23 +101,19 @@ void setup() {
   Serial.println(F("Starting..."));
 
   lcd_init();
+  rtc_init();
   ether_init();
   
   if (weHaveTheNetwork) { dhcp_init(); }
   if (weHaveTheNetwork) { dns_lookup(); }
 
-  rtc_init();
-  // NB! - no timezone defined! Do think as of UTC.
-     /* rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
-     Syntax:
-     rtc.adjust(DateTime(2018, 3, 25, 16, 35, 0)); */
+  rtc_sync();
+  while (timeStatus() == timeNotSet) {
+    Serial.print("Trying to set the time");
+    delay(1000); 
+  }
+  setSyncInterval(taskFourInterval);
 
-    if (weHaveTheNetwork) {
-  // --------- NTP
-  // TBD - https://www.eecis.udel.edu/~mills/y2k.html
-  // ToDo - set, correct or use the current time (once)
-    }
-  
   publishInformation();
 
   // --------- Geiger setup
@@ -112,23 +129,25 @@ void setup() {
 void loop() {
   // DS3231Time + 946684800 = UnixTime
   // https://github.com/PaulStoffregen/Time
-  
-  // TaskLastTimeDone - check if not the same!!!
-  
-  long clockTack = now();
-  
-  if ((clockTack % 10) == 0) {
-     Serial.print(clockTack);
-     Serial.println(" -------- measurementTask");
-     // measurementTask();
-  }
+  long currentTime = now();
+    if (currentTime != timeOfLastAction) {
+    
+    if ((currentTime % taskOneInterval) == 0) {
+       Serial.print(currentTime);
+       Serial.print(" -------- ");
+       DateTime now = rtc.now();
+       Serial.print(now.unixtime());
+       Serial.println(" -------- measurementTask");
+       measurementTask();
+    }
 
-  if ((clockTack % 600) == 0) {
-     Serial.print(clockTack);
-     Serial.println(" -------- !!!!! reportingTask");
-     // reportingTask();
+    if ((currentTime % taskTwoInterval) == 0) {
+       Serial.print(currentTime);
+       Serial.println(" -------- !!!!! reportingTask");
+       reportingTask();
+    }
+  timeOfLastAction = currentTime;
   }
-delay(920); //ms
 } // end of MAIN
 
 
@@ -145,13 +164,15 @@ if (DEBUG) {
   // set up the LCD's number of columns and rows: 
   lcd.begin(16, 2);
   // set the cursor to column 0, line 0
-  lcd.setCursor(0, 0);
-  // Print 1-st msg to the LCD. ToDo: define the atom sign!
-  lcd.print(F("Fukushima greetz"));
+  lcd.setCursor(2, 0);
+  // ToDo: define the atom sign!
+  lcd.print(F("Greetz from"));
+  lcd.setCursor(5, 1);
+  lcd.print(F("Fukushima!"));
 if (DEBUG) {  
   Serial.println(F("Go and check whether the LCD is working!")); // No EZ way to dor it automagically
 }
-  delay(2400); // time to read the msg
+  delay(2400); // timespan to read the msg
 }
 
 
@@ -271,7 +292,7 @@ static void dns_lookup() {
     weHaveTheNetwork = true;
     lcd.clear();
     lcd.setCursor(0, 0);
-    lcd.print(F("DNS OK"));
+    lcd.print(F("Target DNS OK"));
          if (DEBUG) { 
            Serial.print(F("DNS lookup OK. Destination WWW server IP is: "));
            for (byte i = 0; i < 4; ++i) {
@@ -285,6 +306,9 @@ static void dns_lookup() {
         } // DEBUG
    delay(2500);
    } // else
+   
+
+
 }
 
 
@@ -293,37 +317,70 @@ static void dns_lookup() {
 static void rtc_init() {
 
     if (DEBUG) { 
-      Serial.print(F("Attempting to start the runtime clock...  "));
+      Serial.print(F("Initializing the runtime clock...  "));
     }
   lcd.clear();
   lcd.setCursor(0, 0);
   
   if (! rtc.begin()) {
     if (DEBUG) { 
-    Serial.println(F("No DS3231 RTC!"));
+    Serial.println(F("No DS3231 RTC accessible!"));
     }
     lcd.setCursor(0, 1);
     lcd.print(F("No DS3231 RTC!"));
-
   } else {
     lcd.clear();
     lcd.print(F("DS3231 RTC OK!"));
     if (DEBUG) { 
       Serial.println(F("DS3231 RTC OK!"));
-      Serial.print(F("utime: "));
-    }
+      // Serial.print(F("utime: "));
+      // Serial.println(F("waiting for sync"));
+      }
+     time_t t = now(); // Store the current time in time 
+     setTime(t);
+     // rtc.adjust(t);
+     
+    } //else OK
+    delay(2400);
+}
+
+
+  static void rtc_sync() {
+  // NB! - no timezone defined! Do think as of UTC.
+    if (weHaveTheNetwork) {
+      
+         /*  if (!ether.dnsLookup(timeServer)) {
+    Serial.println("DNS failed");
+    } else {
+          lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print(F("Target DNS OK"));
+         if (DEBUG) { 
+           Serial.print(F("DNS lookup OK. Destination NTP server IP is: "));
+           for (byte i = 0; i < 4; ++i) {
+             Serial.print(ether.hisip[i], DEC);
+             if (i < 3) {
+               Serial.print('.');
+             } else {
+               Serial.println();
+             }
+         } //for
+        } // DEBUG
+} // else */
+      
+      setSyncProvider(getNtpTime);
+      // setSyncProvider(getDstCorrectedTime);
+    } else {
     delay(500);
     DateTime now = rtc.now();
     lcd.setCursor(3, 1);
     lcd.print(now.unixtime());
     if (DEBUG) { 
     Serial.println(now.unixtime());
-    }
-  } // else
+    } 
     delay(2400);
-}
-
-
+      }
+  }
 // ----------------- GUI trivia
 
 static void publishInformation() {
@@ -353,45 +410,49 @@ static void publishInformation() {
 
 // ------------------- measure and show the radiation level
 static void measurementTask() {
-  int average = 0;
-  volatile long timeMarker = millis();
-  
-  totalRunTime = (timeMarker / 1000);
-  if ((timeMarker - previousTimestamp) > 10000) {
-    cpm = 6 * clicks; // measured 10 sec; prognosed for 60 sec
+    taskOneTimes++;
+  // volatile long timeMarker = millis();
+    cpm = clicks * taskOneCycles ; // measured 10 sec; prognosed for 60 sec
     microSieverts = cpm * CONV_FACTOR;
-    previousTimestamp = millis();
-    average = (totalClicks * 60 / totalRunTime) ; // totalTime
+    averageCpmForTask1 = ((clicksPerPeriodOne * taskOneCycles) / taskOneTimes ) ; // totalTime
     lcd.clear();    
     lcd.setCursor(0,0);
     lcd.print("cpm=");
     lcd.print(cpm);
     lcd.setCursor(8,0);
     lcd.print("avg=");
-    lcd.print(average);
+    lcd.print(averageCpmForTask1);
     lcd.setCursor(2,1);
     lcd.print(microSieverts,5);
     lcd.setCursor(8,1);
     lcd.print(" uSv/h");
     clicks = 0;
+
+
     if (DEBUG) {
-      Serial.print(totalRunTime);
+      Serial.print(taskOneInterval * taskOneTimes);
       Serial.print(" secs");
       Serial.print(" - ");
-      Serial.print("count=");
-      Serial.print(totalClicks);
+      Serial.print("clicks=");
+      Serial.print(clicksPerPeriodOne);
       Serial.print(" - ");
       Serial.print("CPM = "); 
       Serial.print(cpm,DEC);
       Serial.print(" -===- ");
       Serial.print("avg=");
-      Serial.print(average, DEC);
+      Serial.print(averageCpmForTask1, DEC);
       Serial.print(" -===- ");
       Serial.print("uSv/h = ");
       Serial.println(microSieverts,5);
     }    
+    if (taskOneTimes == taskOneCycles) {
 
-  } 
+    clicksPerPeriodOne = 0;
+    averageCpmForTask1 = 0;
+    taskOneCycles = 0;
+    }
+
+
 } // end of measurementTask
 
 
@@ -431,7 +492,8 @@ void irqService(){
   // safeguards: detaching the interrupt for a while and using volatile variables
   detachInterrupt(0);
   clicks++;
-  clicksPerPeriod++;
+  clicksPerPeriodOne++;
+  clicksPerPeriodTwo++;
   totalClicks++;
   while(digitalRead(2)==0){
   }
@@ -467,5 +529,77 @@ int freeRam ()
   return (int) &v - (__brkval == 0 ? (int) &__heap_start : (int) __brkval);
 }
 
+/* ========================================================================================
+  https://github.com/PaulStoffregen/Time/blob/master/examples/TimeNTP_ENC28J60/TimeNTP_ENC28J60.ino */
 
+/*-------- NTP code ----------*/
+
+// SyncProvider that returns UTC time
+time_t getNtpTime() {
+  // Send request
+  Serial.println("Transmit NTP Request");
+  if (!ether.dnsLookup(timeServer)) {
+    Serial.println("DNS failed");
+    return 0; // return 0 if unable to get the time
+  } else {
+    //ether.printIp("SRV: ", ether.hisip);
+    ether.ntpRequest(ether.hisip, remoteNtpPort);
+  
+    // Wait for reply
+    uint32_t beginWait = millis();
+    while (millis() - beginWait < 1500) {
+      word len = ether.packetReceive();
+      ether.packetLoop(len);
+
+      unsigned long secsSince1900 = 0L;
+      if (len > 0 && ether.ntpProcessAnswer(&secsSince1900, remoteNtpPort)) {
+        Serial.println("Receive NTP Response");
+        return secsSince1900 - 2208988800UL;
+      }
+    }
+    
+    Serial.println("No NTP Response :-(");
+    return 0;
+  }
+}
+
+/* Alternative SyncProvider that automatically handles Daylight Saving Time (DST) periods,
+ * at least in Europe, see below.
+ */
+ 
+time_t getDstCorrectedTime (void) {
+  time_t t = getNtpTime ();
+
+  if (t > 0) {
+    TimeElements tm;
+    breakTime (t, tm);
+    t += (utcOffset + dstOffset (tm.Day, tm.Month, tm.Year + 1970, tm.Hour)) * SECS_PER_HOUR;
+  }
+
+  return t;
+}
+
+/* This function returns the DST offset for the current UTC time.
+ * This is valid for the EU, for other places see
+ * http://www.webexhibits.org/daylightsaving/i.html
+ * 
+ * Results have been checked for 2012-2030 (but should work since
+ * 1996 to 2099) against the following references:
+ * - http://www.uniquevisitor.it/magazine/ora-legale-italia.php
+ * - http://www.calendario-365.it/ora-legale-orario-invernale.html
+ */
+byte dstOffset (byte d, byte m, unsigned int y, byte h) {
+  // Day in March that DST starts on, at 1 am
+  byte dstOn = (31 - (5 * y / 4 + 4) % 7);
+
+  // Day in October that DST ends  on, at 2 am
+  byte dstOff = (31 - (5 * y / 4 + 1) % 7);
+
+  if ((m > 3 && m < 10) ||
+      (m == 3 && (d > dstOn || (d == dstOn && h >= 1))) ||
+      (m == 10 && (d < dstOff || (d == dstOff && h <= 1))))
+    return 1;
+  else
+    return 0;
+}
 
